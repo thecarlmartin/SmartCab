@@ -19,52 +19,59 @@ class LearningAgent(Agent):
         self.color = 'red'  # override color
         self.planner = RoutePlanner(self.env, self)  # simple route planner to get next_waypoint
 
+        # NOTE: Custom variables below that are persistent for the entire duration of the simulation
+        self.available_actions = ['stay', 'forward', 'left', 'right'] # I chose stay instead of None, because it resolved troubles I had with indexing in pandas
+
         self.alpha = 0.9
         self.gamma = 0.5
         self.epsilon = 0.9
-        self.available_actions = ['stay', 'forward', 'left', 'right']
-        self.metrics = pd.DataFrame(columns=['Success', 'CumSuccess', 'Total Reward', 'CumTotal Reward', 'Violations', 'Accidents', 'Trip Duration'])
-        self.metrics.index.name = 'trial'
-        self.trial = 0
 
-        # NOTE: Adding the initialization of the Q Values Dictionary
         self.q_values = pd.DataFrame(columns=self.available_actions)
         self.q_values.index.name = 'state'
+
+        self.metrics = pd.DataFrame(columns=['Success', 'CumSuccess', 'Total Reward', 'CumTotal Reward', 'Violations', 'Accidents', 'Trip Duration'])
+        self.metrics.index.name = 'trial'
+
+        self.trial = 0
 
     def reset(self, destination=None):
         self.planner.route_to(destination)
 
-        # TODO: Prepare for a new trip; reset any variables here, if required
+        # NOTE: Resetting custom variables
         self.route_duration = None
-        self.alpha -= self.alpha * 0.05
-        self.epsilon -= self.epsilon * 0.6
+
+        # NOTE: Preparing variables for new trial
         self.trial += 1
         self.metrics.loc[self.trial] = [0, 0, 0, 0, 0, 0, 0]
 
+        # NOTE: Decreasing paramters
+        self.alpha -= self.alpha * 0.05
+        self.epsilon -= self.epsilon * 0.6
+
     def update(self, t):
-        # Gather inputs
+        # NOTE: Getting Inputs
         self.next_waypoint = self.planner.next_waypoint()  # from route planner, also displayed by simulator
         inputs = self.env.sense(self)
         deadline = self.env.get_deadline(self)
 
-        # Setting the current state
+        # NOTE: Saving the route duration for calculations and analysis
+        if self.route_duration == None:
+            self.route_duration = deadline
+
+        # NOTE: Setting the current state
         self.state = self.assemble_state(deadline, self.next_waypoint, inputs)
 
-        # Selecting the appropriate action based on the policy
+        # NOTE: Selecting the appropriate action based on the policy
         action = self.policy(self.state)
 
-        # Execute action and get reward
+        # NOTE: Execute action and get reward
         if action == 'stay':
             reward = self.env.act(self, None)
         else:
             reward = self.env.act(self, action)
 
-        location = self.env.agent_states[self]["location"]
-        destination = self.env.agent_states[self]["destination"]
-
-
-        # Code for tracking relevant agent metrics
-        if location == destination:
+        # NOTE: Tracking relevant agent metrics
+        if self.env.agent_states[self]["location"] == self.env.agent_states[self]["destination"]:
             self.metrics.loc[self.trial, 'Success'] = 1
 
         if reward == -0.5:
@@ -74,39 +81,24 @@ class LearningAgent(Agent):
             self.metrics.loc[self.trial, 'Accidents'] += 1
 
         self.metrics.loc[self.trial, 'Trip Duration'] = (self.route_duration - deadline)/self.route_duration
-
         self.metrics.loc[self.trial, 'Total Reward'] += reward
 
-        # Getting the new state of Smartcab and recording the learned Q value
+        # NOTE: Getting the new state of smart cab and recording the learned Q value
         new_state = self.assemble_state(deadline - 1, self.planner.next_waypoint(), self.env.sense(self))
-
         self.q_values.loc[self.state, action] = (1 - self.alpha) * self.get_qvalue(self.state, action) + self.alpha * (reward + self.gamma * self.max_q(new_state))
 
         print "LearningAgent.update(): waypoint={}, deadline = {}, inputs = {}, state = {}, action = {}, reward = {}".format(self.next_waypoint, deadline, inputs, self.state, action, reward)  # [debug]
 
-        self.q_values.to_csv('q_table.csv')
-        self.metrics.to_csv('metrics.csv')
-
+        # NOTE: Saving q matrix and metrics to csv - this has to be optimized
         self.metrics['CumSuccess'] = self.metrics['Success'].cumsum()
         self.metrics['CumTotal Reward'] = self.metrics['Total Reward'].cumsum()
 
-
-
+        self.q_values.to_csv('q_table.csv')
+        self.metrics.to_csv('metrics.csv')
 
     def assemble_state(self, deadline, next_waypoint, inputs):
 
-        # Implementation of the deadline portion
-        if self.route_duration == None:
-            self.route_duration = deadline
-
-        '''
-        Available information in each state are:
-        - deadline
-        - waypoint
-        - risk_level: drive_safe, drive_reckless or drive_accident
-        States are set depending on combination of inputs. Consult the documentation for more details.
-        '''
-
+        # NOTE: Deadline calculations
         if deadline/self.route_duration > 0.4:
             state_deadline = 1
         else:
@@ -114,7 +106,7 @@ class LearningAgent(Agent):
 
         return "{}, {}, {}, {}, {}".format(state_deadline, next_waypoint, inputs['light'], inputs['left'], inputs['oncoming'], inputs['right'])
 
-    def get_qvalue(self, state, action):
+    def get_qvalue(self, state, action): # Function to get Q-Values safely
 
         if state in self.q_values.index:
             if not math.isnan(self.q_values.loc[state, action]):
@@ -122,10 +114,10 @@ class LearningAgent(Agent):
             else:
                 return 0
         else:
-            # Q Matrix is initialized to zero
+            # NOTE: Q Matrix is initialized to zero
             return 0
 
-    def max_q(self, state):
+    def max_q(self, state): # Function to get the maximum q value safely
 
         if state in self.q_values.index:
             return self.q_values.loc[state].max()
@@ -134,9 +126,10 @@ class LearningAgent(Agent):
 
     def policy(self, state):
 
-        # Choosing a random action 20% of the time and 80% of the time follow the max Q value
+        # NOTE: Based on epsilon choosing either random or policy based actions
         action_category = np.random.choice([0, 1], p=[1 - self.epsilon, self.epsilon])
 
+        # NOTE: Choosing the action based on the learned policy, if enough data is available
         if action_category == 0:
             if self.state in self.q_values.index:
 
@@ -150,8 +143,8 @@ class LearningAgent(Agent):
             else:
                 action_category = 1
 
+        # NOTE: Choosing a random action
         if action_category == 1:
-            print "Random Action Chosen"
             action = np.random.choice(self.available_actions)
 
         return action
